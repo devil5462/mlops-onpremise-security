@@ -1,0 +1,70 @@
+---
+# Main Ansible playbook for on-premise MLOps platform setup
+
+- name: Setup MLOps On-Premise Security Platform
+  hosts: all
+  become: yes
+  vars:
+    kubernetes_version: "1.27.0"
+    docker_version: "24.0"
+    vault_version: "1.15.0"
+    falco_version: "0.36.0"
+
+  pre_tasks:
+    - name: Update system packages
+      apt:
+        update_cache: yes
+        cache_valid_time: 3600
+
+    - name: Install basic packages
+      apt:
+        name:
+          - curl
+          - wget
+          - git
+          - vim
+          - htop
+          - net-tools
+          - jq
+          - unzip
+        state: present
+
+  roles:
+    - role: docker
+      tags: docker
+
+    - role: kubernetes
+      tags: kubernetes
+
+    - role: vault
+      tags: vault
+
+    - role: falco
+      tags: falco
+
+    - role: rbac
+      tags: rbac
+
+    - role: network_security
+      tags: network
+
+    - role: monitoring
+      tags: monitoring
+
+  post_tasks:
+    - name: Verify Kubernetes cluster
+      command: kubectl get nodes
+      register: k8s_nodes
+
+    - name: Display Kubernetes nodes
+      debug:
+        var: k8s_nodes.stdout_lines
+
+    - name: Verify Vault installation
+      command: vault status
+      register: vault_status
+      ignore_errors: yes
+
+    - name: Display Vault status
+      debug:
+        var: vault_status.stdout_lines

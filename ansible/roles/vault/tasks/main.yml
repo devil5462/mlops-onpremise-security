@@ -1,0 +1,133 @@
+---
+# Install and configure Vault
+
+- name: Create vault user
+  user:
+    name: vault
+    system: yes
+    shell: /bin/false
+    home: /var/lib/vault
+
+- name: Download Vault binary
+  get_url:
+    url: "https://releases.hashicorp.com/vault/{{ vault_version }}/vault_{{ vault_version }}_linux_amd64.zip"
+    dest: /tmp/vault.zip
+    checksum: "sha256:https://releases.hashicorp.com/vault/{{ vault_version }}/vault_{{ vault_version }}_SHA256SUMS"
+
+- name: Unzip Vault binary
+  unarchive:
+    src: /tmp/vault.zip
+    dest: /usr/local/bin/
+    owner: root
+    group: root
+    mode: '0755'
+    remote_src: yes
+
+- name: Enable mlock capability for vault binary
+  shell: setcap cap_ipc_lock=ep /usr/local/bin/vault
+
+- name: Create vault directories
+  file:
+    path: "{{ item }}"
+    state: directory
+    owner: vault
+    group: vault
+    mode: '0750'
+  loop:
+    - /etc/vault
+    - /var/lib/vault
+    - /var/log/vault
+
+- name: Create Vault configuration file
+  copy:
+    content: |
+      ui = true
+
+      listener "tcp" {
+        address       = "0.0.0.0:8200"
+        tls_cert_file = "/etc/vault/tls.crt"
+        tls_key_file  = "/etc/vault/tls.key"
+      }
+
+      storage "file" {
+        path = "/var/lib/vault/data"
+      }
+
+      log_level = "info"
+    dest: /etc/vault/config.hcl
+    owner: vault
+    group: vault
+    mode: '0640'
+
+- name: Create Vault systemd service
+  copy:
+    content: |
+      [Unit]
+      Description=HashiCorp Vault
+      Documentation=https://www.vaultproject.io/docs/
+      Requires=network-online.target
+      After=network-online.target
+      ConditionFileNotEmpty=/etc/vault/config.hcl
+
+      [Service]
+      Type=notify
+      User=vault
+      Group=vault
+      ProtectSystem=full
+      ProtectHome=yes
+      NoNewPrivileges=yes
+      PrivateTmp=yes
+      PrivateDevices=yes
+      SecureBits=keep-caps
+      AmbientCapabilities=CAP_IPC_LOCK
+      Capabilities=CAP_SYSLOG+ep
+      LimitNOFILE=65536
+      LimitNPROC=512
+      KillMode=process
+      Restart=on-failure
+      RestartSec=5
+      TimeoutStopSec=30
+      LimitMEMLOCK=infinity
+      ExecStart=/usr/local/bin/vault server -config=/etc/vault/config.hcl
+      ExecReload=/bin/kill -HUP $MAINPID
+      StandardOutput=journal
+      StandardError=journal
+      SyslogIdentifier=vault
+
+      [Install]
+      WantedBy=multi-user.target
+    dest: /etc/systemd/system/vault.service
+    owner: root
+    group: root
+    mode: '0644'
+
+- name: Enable and start Vault service
+  systemd:
+    name: vault
+    state: started
+    enabled: yes
+    daemon_reload: yes
+
+- name: Wait for Vault to start
+  wait_for:
+    port: 8200
+    delay: 2
+    timeout: 30
+
+- name: Initialize Vault (first time only)
+  shell: |
+    vault operator init \
+      -key-shares=5 \
+      -key-threshold=3 \
+      -format=json > /var/lib/vault/init.json || true
+  environment:
+    VAULT_ADDR: "https://127.0.0.1:8200"
+    VAULT_SKIP_VERIFY: "true"
+  register: vault_init
+
+- name: Set restrictive permissions on init file
+  file:
+    path: /var/lib/vault/init.json
+    owner: vault
+    group: vault
+    mode: '0400'

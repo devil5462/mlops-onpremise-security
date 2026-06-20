@@ -1,0 +1,71 @@
+---
+# Install Docker
+
+- name: Add Docker GPG key
+  apt_key:
+    url: https://download.docker.com/linux/ubuntu/gpg
+    state: present
+
+- name: Add Docker repository
+  apt_repository:
+    repo: deb [arch=amd64] https://download.docker.com/linux/ubuntu {{ ansible_distribution_release }} stable
+    state: present
+
+- name: Install Docker
+  apt:
+    name:
+      - docker-ce
+      - docker-ce-cli
+      - containerd.io
+      - docker-compose-plugin
+    state: present
+    update_cache: yes
+
+- name: Start Docker service
+  systemd:
+    name: docker
+    state: started
+    enabled: yes
+
+- name: Add current user to docker group
+  user:
+    name: "{{ ansible_user_id }}"
+    groups: docker
+    append: yes
+
+- name: Configure Docker daemon with security settings
+  copy:
+    content: |
+      {
+        "insecure-registries": [],
+        "log-driver": "json-file",
+        "log-opts": {
+          "max-size": "10m",
+          "max-file": "5"
+        },
+        "icc": false,
+        "default-ulimits": {
+          "nofile": {
+            "Name": "nofile",
+            "Hard": 64000,
+            "Soft": 64000
+          }
+        }
+      }
+    dest: /etc/docker/daemon.json
+    owner: root
+    group: root
+    mode: '0644'
+  notify: Restart Docker
+
+- name: Enable user namespace remap (security)
+  lineinfile:
+    path: /etc/docker/daemon.json
+    insertafter: '"insecure-registries": \[\]'
+    line: '  "userns-remap": "default"'
+
+- name: Setup Docker user namespace
+  shell: |
+    useradd -r -s /bin/false dockremap || true
+    echo "dockremap:100000:65536" >> /etc/subuid
+    echo "dockremap:100000:65536" >> /etc/subgid

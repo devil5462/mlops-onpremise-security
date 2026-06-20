@@ -1,0 +1,131 @@
+---
+# Install Falco for intrusion detection
+
+- name: Add Falco GPG key
+  apt_key:
+    url: https://falco.org/repo/falcosecurity-3672BA8F.asc
+    state: present
+
+- name: Add Falco repository
+  apt_repository:
+    repo: deb https://download.falco.org/packages/deb stable main
+    state: present
+
+- name: Install Falco
+  apt:
+    name: falco
+    state: present
+    update_cache: yes
+
+- name: Create Falco configuration directory
+  file:
+    path: /etc/falco
+    state: directory
+    owner: root
+    group: root
+    mode: '0755'
+
+- name: Configure Falco output to Stdout
+  lineinfile:
+    path: /etc/falco/falco.yaml
+    regexp: '^  - stdout'
+    line: '  - stdout'
+    state: present
+
+- name: Configure Falco syslog output
+  lineinfile:
+    path: /etc/falco/falco.yaml
+    regexp: '^  - syslog'
+    line: '  - syslog'
+    state: present
+
+- name: Configure Falco JSON output
+  lineinfile:
+    path: /etc/falco/falco.yaml
+    regexp: 'json_output: false'
+    line: 'json_output: true'
+    state: present
+
+- name: Create custom Falco rules file
+  copy:
+    content: |
+      - rule: Unauthorized Process Execution
+        desc: Detect unauthorized processes
+        condition: >
+          spawned_process and
+          container and
+          not proc.name in (authorized_processes) and
+          not proc.pname in (authorized_parents)
+        output: >
+          Unauthorized process started
+          (user=%user.name process=%proc.name
+          parent=%proc.pname container=%container.name)
+        priority: WARNING
+        tags: [process, security]
+
+      - rule: Sensitive File Access
+        desc: Detect access to sensitive files
+        condition: >
+          open and
+          container and
+          fd.name in (/etc/shadow, /etc/passwd, /root/.ssh)
+        output: >
+          Sensitive file accessed
+          (user=%user.name file=%fd.name
+          container=%container.name)
+        priority: CRITICAL
+        tags: [file, security]
+
+      - rule: Network Escape Attempt
+        desc: Detect attempts to escape container network
+        condition: >
+          connect and
+          container and
+          not fd.snet in (10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16)
+        output: >
+          Container network escape attempt
+          (user=%user.name connection=%fd.name
+          container=%container.name)
+        priority: CRITICAL
+        tags: [network, security]
+
+      - macro: authorized_processes
+        condition: >
+          (proc.name in (bash, sh, curl, wget, jq, apt, apt-get,
+          python, python3, java, node, npm, docker, kubectl))
+
+      - macro: authorized_parents
+        condition: >
+          (proc.pname in (systemd, bash, sh, docker, containerd,
+          kubelet, docker-runc))
+    dest: /etc/falco/custom-rules.yaml
+    owner: root
+    group: root
+    mode: '0644'
+
+- name: Enable Falco service
+  systemd:
+    name: falco
+    state: started
+    enabled: yes
+    daemon_reload: yes
+
+- name: Configure syslog for Falco alerts
+  copy:
+    content: |
+      # Falco alerts
+      :programname, isequal, "falco" /var/log/falco/alerts.log
+    dest: /etc/rsyslog.d/50-falco.conf
+    owner: root
+    group: root
+    mode: '0644'
+  notify: Restart rsyslog
+
+- name: Verify Falco installation
+  command: falco --version
+  register: falco_version
+  changed_when: false
+
+- name: Display Falco version
+  debug:
+    var: falco_version.stdout
